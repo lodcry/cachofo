@@ -1,0 +1,31 @@
+workflows:
+  tork-apk:
+    name: Tork APK
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+
+    environment:
+      java: 17
+
+    scripts:
+      - name: Setup
+        script: |
+          cd $CM_BUILD_DIR
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+          gradle wrapper --gradle-version=8.2
+
+      - name: Build debug APK
+        script: |
+          cd $CM_BUILD_DIR
+          ./gradlew assembleDebug --stacktrace
+
+    artifacts:
+      - app/build/outputs/apk/debug/*.apk
+
+    publishing:
+      email:
+        recipients:
+          - seu@email.com
+        notify:
+          success: true
+          failure: true
