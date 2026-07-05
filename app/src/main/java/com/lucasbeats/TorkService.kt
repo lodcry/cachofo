@@ -16,15 +16,25 @@ class TorkService : Service() {
         const val NOTIF_ID   = 1
     }
 
-    val mesh    = MeshManager()
-    val gps     = GpsManager(this)
-    val sender  by lazy { SmsSender(this) }
+    val mesh = MeshManager()
+
+    // IMPORTANTE: gps e sender precisam ser "lazy" — eles usam getSystemService()
+    // internamente, e isso só pode ser chamado com segurança DEPOIS que o Android
+    // termina de "anexar" o Context ao Service (attachBaseContext). Se forem
+    // criados direto no construtor da classe (val x = Classe(this)), o Context
+    // ainda está incompleto e getSystemService() retorna null → NullPointerException
+    // no exato momento em que o serviço é instanciado. Com "by lazy", a criação só
+    // acontece na primeira vez que "gps" ou "sender" forem usados de verdade —
+    // e isso só ocorre dentro do onCreate(), quando o Context já está pronto.
+    val gps    by lazy { GpsManager(this) }
+    val sender by lazy { SmsSender(this) }
+
     val handler = Handler(Looper.getMainLooper())
 
     // Callbacks pra UI
     var onLocationUpdate: ((Double, Double, Float) -> Unit)? = null
-    var onMemberUpdate:   ((List<Member>) -> Unit)?         = null
-    var onChatMessage:    ((ChatMessage) -> Unit)?           = null
+    var onMemberUpdate:   ((List<Member>) -> Unit)?           = null
+    var onChatMessage:    ((ChatMessage) -> Unit)?            = null
 
     private var myPhone = ""
     private var myName  = ""
@@ -50,11 +60,12 @@ class TorkService : Service() {
     override fun onDestroy() {
         instance = null
         handler.removeCallbacksAndMessages(null)
-        gps.stop()
+        try { gps.stop() } catch (_: Exception) {}
         super.onDestroy()
     }
 
     override fun onBind(i: Intent?) = null
+
     override fun onStartCommand(i: Intent?, f: Int, id: Int): Int {
         i?.let {
             myPhone = it.getStringExtra("phone") ?: myPhone
@@ -65,20 +76,27 @@ class TorkService : Service() {
     }
 
     private fun startGps() {
-        gps.start { lat, lng, acc ->
-            myLat = lat; myLng = lng; myAcc = acc
-            onLocationUpdate?.invoke(lat, lng, acc)
-            // Prune membros offline
-            mesh.pruneStale()
-            onMemberUpdate?.invoke(mesh.members.values.toList())
+        try {
+            gps.start { lat, lng, acc ->
+                myLat = lat; myLng = lng; myAcc = acc
+                onLocationUpdate?.invoke(lat, lng, acc)
+                // Prune membros offline
+                mesh.pruneStale()
+                onMemberUpdate?.invoke(mesh.members.values.toList())
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("Tork/Service", "Erro ao iniciar GPS: ${e.message}")
         }
         handler.postDelayed(gpsRunnable, GPS_INTERVAL)
     }
 
     private fun broadcastLocation() {
         if (myPhone.isEmpty() || myLat == 0.0) return
+        if (mesh.contacts.isEmpty()) return // evita chamada de SmsManager sem destinatários
         val payload = SmsProtocol.encodeLoc(myPhone, myName, myColor, myLat, myLng, myAcc)
-        sender.send(mesh.contacts, payload)
+        try { sender.send(mesh.contacts, payload) } catch (e: Exception) {
+            android.util.Log.e("Tork/Service", "Erro ao enviar localização: ${e.message}")
+        }
     }
 
     // Chamado pelo SmsReceiver
@@ -100,9 +118,13 @@ class TorkService : Service() {
 
     fun sendChat(text: String) {
         if (myPhone.isEmpty() || text.isBlank()) return
-        val msgId  = System.currentTimeMillis().toString()
+        val msgId = System.currentTimeMillis().toString()
         val payload = SmsProtocol.encodeChatChunk(myPhone, myName, myColor, msgId, text)
-        sender.send(mesh.contacts, payload)
+        if (mesh.contacts.isNotEmpty()) {
+            try { sender.send(mesh.contacts, payload) } catch (e: Exception) {
+                android.util.Log.e("Tork/Service", "Erro ao enviar chat: ${e.message}")
+            }
+        }
         // Exibe localmente também
         val msg = ChatMessage(msgId, myPhone, myName, myColor, text, System.currentTimeMillis())
         handler.post { onChatMessage?.invoke(msg) }
