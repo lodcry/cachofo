@@ -7,7 +7,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.MotionEvent
 import android.view.View
-import com.madout2.tork.Member
+import com.lucasbeats.Member
 import kotlin.math.*
 
 // MapView 100% nativo — Canvas + tiles OSM cacheados
