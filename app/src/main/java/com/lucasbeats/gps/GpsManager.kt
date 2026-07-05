@@ -10,7 +10,7 @@ import android.os.Looper
 // Wrapper simples sobre LocationManager — sem dependência de Play Services
 class GpsManager(private val ctx: Context) {
 
-    interface Listener { fun onLocation(lat: Double, lng: Double, acc: Float) }
+    fun interface Listener { fun onLocation(lat: Double, lng: Double, acc: Float) }
 
     private val lm = ctx.getSystemService(Context.LOCATION_SERVICE) as LocationManager
     private var listener: Listener? = null
