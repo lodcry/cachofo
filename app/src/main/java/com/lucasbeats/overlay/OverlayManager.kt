@@ -8,8 +8,6 @@ import android.widget.*
 import com.lucasbeats.ChatMessage
 import com.lucasbeats.Member
 
-// Overlay flutuante — pílula com chat + lista de membros
-// Sem WebView, 100% nativo
 class OverlayManager(private val ctx: Context) {
 
     private val wm = ctx.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -43,6 +41,15 @@ class OverlayManager(private val ctx: Context) {
         membPanel = null; chatPanel = null; pillView = null
     }
 
+    // NOVO: carrega o histórico já existente (vindo do TorkService.chatHistory) assim
+    // que o overlay abre — antes o overlay só mostrava mensagens novas, então "abria
+    // vazio" e parecia que nada tinha sido salvo.
+    fun loadHistory(list: List<ChatMessage>) {
+        messages.clear()
+        messages.addAll(list.takeLast(MAX_MSGS))
+        refreshChat()
+    }
+
     fun addMessage(msg: ChatMessage) {
         messages.addLast(msg)
         if (messages.size > MAX_MSGS) messages.removeFirst()
@@ -52,8 +59,6 @@ class OverlayManager(private val ctx: Context) {
     fun updateMembers(list: List<Member>) {
         refreshMembers(list)
     }
-
-    // ── Pílula ────────────────────────────────────────────────────────────────
 
     private fun buildPill(onSend: (String) -> Unit) {
         val pill = LinearLayout(ctx).apply {
@@ -113,8 +118,6 @@ class OverlayManager(private val ctx: Context) {
         pillView = pill
         try { wm.addView(pill, pp) } catch (_: Exception) {}
     }
-
-    // ── Chat Panel ────────────────────────────────────────────────────────────
 
     private fun buildChatPanel(onSend: (String) -> Unit) {
         val panel = LinearLayout(ctx).apply {
@@ -185,8 +188,6 @@ class OverlayManager(private val ctx: Context) {
         try { wm.addView(panel, cp) } catch (_: Exception) {}
     }
 
-    // ── Membros Panel ─────────────────────────────────────────────────────────
-
     private fun buildMembPanel() {
         val panel = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
@@ -228,8 +229,6 @@ class OverlayManager(private val ctx: Context) {
         membP = mp; membPanel = panel
         try { wm.addView(panel, mp) } catch (_: Exception) {}
     }
-
-    // ── Refresh ───────────────────────────────────────────────────────────────
 
     private fun refreshChat() {
         val ll = llChat ?: return; ll.removeAllViews()
@@ -278,8 +277,6 @@ class OverlayManager(private val ctx: Context) {
         }
     }
 
-    // ── Toggle ────────────────────────────────────────────────────────────────
-
     private fun toggleChat(onSend: (String) -> Unit) {
         chatOpen = !chatOpen
         val panel = chatPanel ?: return; val cp = chatP ?: return
@@ -298,8 +295,6 @@ class OverlayManager(private val ctx: Context) {
         val panel = membPanel ?: return
         panel.visibility = if (membOpen) View.VISIBLE else View.GONE
     }
-
-    // ── Utils ─────────────────────────────────────────────────────────────────
 
     private fun rmv(v: View?) { try { if (v != null) wm.removeView(v) } catch (_: Exception) {} }
     private fun lp(w: Int, h: Int, wt: Float = 0f) = LinearLayout.LayoutParams(w, h, wt)
