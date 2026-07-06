@@ -7,6 +7,7 @@ import androidx.core.app.NotificationCompat
 import com.lucasbeats.gps.GpsManager
 import com.lucasbeats.mesh.MeshManager
 import com.lucasbeats.sms.SmsSender
+import com.lucasbeats.store.Storage
 
 class TorkService : Service() {
 
@@ -14,24 +15,23 @@ class TorkService : Service() {
         var instance: TorkService? = null
         const val CHANNEL_ID = "tork_gps"
         const val NOTIF_ID   = 1
+        const val MAX_CHAT   = 200
     }
 
-    val mesh = MeshManager()
-
-    // IMPORTANTE: gps e sender precisam ser "lazy" — eles usam getSystemService()
-    // internamente, e isso só pode ser chamado com segurança DEPOIS que o Android
-    // termina de "anexar" o Context ao Service (attachBaseContext). Se forem
-    // criados direto no construtor da classe (val x = Classe(this)), o Context
-    // ainda está incompleto e getSystemService() retorna null → NullPointerException
-    // no exato momento em que o serviço é instanciado. Com "by lazy", a criação só
-    // acontece na primeira vez que "gps" ou "sender" forem usados de verdade —
-    // e isso só ocorre dentro do onCreate(), quando o Context já está pronto.
+    // IMPORTANTE: qualquer objeto que use getSystemService/getSharedPreferences por baixo
+    // dos panos (GpsManager, SmsSender, MeshManager) precisa ser "by lazy" — criado só na
+    // primeira vez que for usado, depois que o Android já anexou o Context ao Service.
+    val mesh   by lazy { MeshManager(this) }
     val gps    by lazy { GpsManager(this) }
     val sender by lazy { SmsSender(this) }
 
     val handler = Handler(Looper.getMainLooper())
 
-    // Callbacks pra UI
+    // Histórico de chat em memória, espelhado no disco via Storage — assim a tela
+    // principal, o overlay, e o que já existia antes do app abrir mostram sempre a
+    // mesma coisa, sincronizados.
+    val chatHistory: MutableList<ChatMessage> = mutableListOf()
+
     var onLocationUpdate: ((Double, Double, Float) -> Unit)? = null
     var onMemberUpdate:   ((List<Member>) -> Unit)?           = null
     var onChatMessage:    ((ChatMessage) -> Unit)?            = null
@@ -40,7 +40,6 @@ class TorkService : Service() {
     private var myName  = ""
     private var myColor = 0xFF4eff9a.toInt()
 
-    // Intervalo de broadcast GPS via SMS (5 segundos)
     private val GPS_INTERVAL = 5000L
     private var myLat = 0.0; private var myLng = 0.0; private var myAcc = 0f
     private val gpsRunnable = object : Runnable {
@@ -52,6 +51,7 @@ class TorkService : Service() {
 
     override fun onCreate() {
         super.onCreate(); instance = this
+        try { chatHistory.addAll(Storage.loadChat(this)) } catch (_: Exception) {}
         createNotificationChannel()
         startForeground(NOTIF_ID, buildNotif("🌿 Tork ativo"))
         startGps()
@@ -80,7 +80,6 @@ class TorkService : Service() {
             gps.start { lat, lng, acc ->
                 myLat = lat; myLng = lng; myAcc = acc
                 onLocationUpdate?.invoke(lat, lng, acc)
-                // Prune membros offline
                 mesh.pruneStale()
                 onMemberUpdate?.invoke(mesh.members.values.toList())
             }
@@ -92,25 +91,25 @@ class TorkService : Service() {
 
     private fun broadcastLocation() {
         if (myPhone.isEmpty() || myLat == 0.0) return
-        if (mesh.contacts.isEmpty()) return // evita chamada de SmsManager sem destinatários
+        if (mesh.contacts.isEmpty()) return
         val payload = SmsProtocol.encodeLoc(myPhone, myName, myColor, myLat, myLng, myAcc)
         try { sender.send(mesh.contacts, payload) } catch (e: Exception) {
             android.util.Log.e("Tork/Service", "Erro ao enviar localização: ${e.message}")
         }
     }
 
-    // Chamado pelo SmsReceiver
     fun onSmsReceived(body: String) {
         when {
             body.startsWith(SmsProtocol.PREFIX_LOC) -> {
                 val member = SmsProtocol.decodeLoc(body) ?: return
-                if (member.phone == myPhone) return // ignora próprio
+                if (member.phone == myPhone) return
                 mesh.updateLocation(member)
                 handler.post { onMemberUpdate?.invoke(mesh.members.values.toList()) }
             }
             body.startsWith(SmsProtocol.PREFIX_CHAT) -> {
                 val msg = SmsProtocol.decodeChat(body) ?: return
                 if (msg.phone == myPhone) return
+                persistChat(msg)
                 handler.post { onChatMessage?.invoke(msg) }
             }
         }
@@ -119,15 +118,21 @@ class TorkService : Service() {
     fun sendChat(text: String) {
         if (myPhone.isEmpty() || text.isBlank()) return
         val msgId = System.currentTimeMillis().toString()
-        val payload = SmsProtocol.encodeChatChunk(myPhone, myName, myColor, msgId, text)
+        val msg = ChatMessage(msgId, myPhone, myName, myColor, text, System.currentTimeMillis())
+        persistChat(msg)
         if (mesh.contacts.isNotEmpty()) {
+            val payload = SmsProtocol.encodeChatChunk(myPhone, myName, myColor, msgId, text)
             try { sender.send(mesh.contacts, payload) } catch (e: Exception) {
                 android.util.Log.e("Tork/Service", "Erro ao enviar chat: ${e.message}")
             }
         }
-        // Exibe localmente também
-        val msg = ChatMessage(msgId, myPhone, myName, myColor, text, System.currentTimeMillis())
         handler.post { onChatMessage?.invoke(msg) }
+    }
+
+    private fun persistChat(msg: ChatMessage) {
+        chatHistory.add(msg)
+        if (chatHistory.size > MAX_CHAT) chatHistory.removeAt(0)
+        try { Storage.saveChat(this, chatHistory) } catch (_: Exception) {}
     }
 
     fun setProfile(phone: String, name: String, color: Int) {
